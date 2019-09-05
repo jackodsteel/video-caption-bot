@@ -1,5 +1,5 @@
 # Used to store credentials for development
-application.yml
+/application.yml
 
 # Created by https://www.gitignore.io/api/git,java,linux,macos,maven,gradle,kotlin,windows,intellij+all
 # Edit at https://www.gitignore.io/?templates=git,java,linux,macos,maven,gradle,kotlin,windows,intellij+all
