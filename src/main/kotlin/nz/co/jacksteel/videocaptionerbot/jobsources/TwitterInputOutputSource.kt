@@ -1,11 +1,18 @@
 package nz.co.jacksteel.videocaptionerbot.jobsources
 
+import io.ktor.client.request.forms.append
+import io.ktor.http.ContentType
 import io.ktor.http.Cookie
 import jp.nephy.jsonkt.string
 import jp.nephy.penicillin.PenicillinClient
+import jp.nephy.penicillin.core.request.EndpointHost
+import jp.nephy.penicillin.core.request.append
+import jp.nephy.penicillin.core.request.formBody
+import jp.nephy.penicillin.core.request.multiPartBody
 import jp.nephy.penicillin.core.session.config.account
 import jp.nephy.penicillin.core.session.config.application
 import jp.nephy.penicillin.core.session.config.token
+import jp.nephy.penicillin.core.session.post
 import jp.nephy.penicillin.endpoints.media
 import jp.nephy.penicillin.endpoints.media.*
 import jp.nephy.penicillin.endpoints.statuses
@@ -19,6 +26,7 @@ import jp.nephy.penicillin.models.Media
 import jp.nephy.penicillin.models.Status
 import jp.nephy.penicillin.models.entities.MediaEntity
 import kotlinx.coroutines.delay
+import kotlinx.io.core.writeFully
 import nz.co.jacksteel.videocaptionerbot.TwitterCredentials
 import nz.co.jacksteel.videocaptionerbot.jobsources.penicillin.StatusAuthenticationResponse
 import nz.co.jacksteel.videocaptionerbot.jobsources.penicillin.conversation
@@ -178,4 +186,87 @@ fun Status.getVideo(): MediaEntity.VideoInfo.Variant? {
     }
     val mediaEntity = extendedEntities.media[0]
     return mediaEntity.videoInfo?.variants?.maxBy { variant -> variant.bitrate ?: -1 }
+}
+
+suspend fun main() {
+    val client = PenicillinClient {
+        account {
+        }
+    }
+
+    val file = File("/Users/jack/Downloads/captions.srt")
+
+    println(file.length())
+
+    val init = client.session.post("/1.1/media/upload.json", EndpointHost.MediaUpload) {
+        formBody(
+                "command" to "INIT",
+                "total_bytes" to file.length(),
+                "media_type" to ContentType("application", "octet-stream"),
+                "media_category" to "Subtitles"
+        )
+    }.jsonObject<Media>().await().result
+    val mediaId = init.mediaId
+    println("Did upload init, mediaId: $mediaId, ${file.length()}")
+
+    client.session.post("/1.1/media/upload.json", EndpointHost.MediaUpload) {
+        multiPartBody {
+            append("media", "blob", ContentType("application", "octet-stream")) {
+                writeFully(file.readBytes())
+            }
+            append(
+                    "command" to "APPEND",
+                    "media_id" to mediaId,
+                    "media_key" to null,
+                    "segment_index" to 0
+            )
+        }
+    }.empty().complete()
+//    file.forEachBlockIndexed(blockSize = 4 * 1048576) { chunk, segment ->
+//        println("Uploading chunk")
+//        client.session.post("/1.1/media/upload.json", EndpointHost.MediaUpload) {
+//            multiPartBody {
+//                append("media", "blob", ContentType("image", "plain")) {
+//                    chunk.inputStream().use {
+//                        writeFully(it.readBytes())
+//                    }
+//                }
+//                append(
+//                        "command" to "APPEND",
+//                        "media_id" to mediaId,
+//                        "media_key" to null,
+//                        "segment_index" to segment
+//                )
+//            }
+//        }.empty().complete()
+
+//        client.media.uploadAppend(
+//                mediaId = mediaId,
+//                segmentIndex = segment,
+//                media = MediaComponent(
+//                        data = chunk,
+//                        type = MediaType.MP4,
+//                        category = MediaCategory.TweetVideo
+//                )
+//        ).complete()
+//        println("Uploaded chunk")
+//    }
+    println("Done chunks, finalizing")
+    val uploadResult = client.media.uploadFinalize(mediaId = mediaId).await().result
+    println("Done uploadResult")
+    println(uploadResult)
+    var processingInfo = uploadResult.processingInfo
+    while (true) {
+        if (processingInfo == null || processingInfo.state == Media.ProcessingInfo.State.Succeeded) {
+            break
+        }
+        if (processingInfo.state == Media.ProcessingInfo.State.Failed) {
+            throw UploadFailedException("Media processing failed after upload, ${processingInfo.error}")
+        }
+        println("Processing, progress: ${processingInfo.progressPercent}")
+        delay(processingInfo.checkAfterSecs?.times(1000L) ?: 2000)
+        processingInfo = client.media.uploadStatus(mediaId).await().result.processingInfo
+    }
+    println("Done await")
+    println(uploadResult)
 }
